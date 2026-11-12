@@ -5,6 +5,7 @@
 
 #include "psarc_compression.hpp"
 #include "psarc_types.hpp"
+#include "zlib.h"
 
 using namespace PSArc;
 
@@ -37,7 +38,11 @@ void RunZlibRoundTrip(const std::vector<byte>& original, size_t blockSize) {
   ZLIBCompress(compressed, original, compressedBlockSizes, blockSize, blockSize * 2);
 
   std::vector<byte> decompressed;
-  std::vector<bool> blockIsCompressed(compressedBlockSizes.size(), true);
+  std::vector<bool> blockIsCompressed;
+  for (size_t i = 0; i < compressedBlockSizes.size(); ++i) {
+    size_t inputSize = std::min(blockSize, original.size() - i * blockSize);
+    blockIsCompressed.push_back(compressedBlockSizes[i] != 0 && compressedBlockSizes[i] < inputSize);
+  }
   ZLIBDecompress(decompressed, compressed, compressedBlockSizes, blockIsCompressed);
 
   ASSERT_EQ(decompressed.size(), original.size());
@@ -81,6 +86,51 @@ TEST(ZlibCompression, SingleByteRoundTrip) {
 TEST(ZlibCompression, IncompressibleDataRoundTrip) {
   auto buf = MakeIncompressibleBuffer(32 * 1024);
   RunZlibRoundTrip(buf, 65536);
+}
+
+TEST(ZlibCompression, EqualSizeCompressedBlockIsStoredRaw) {
+  constexpr size_t blockSize = 65536;
+  auto original = MakeIncompressibleBuffer(blockSize);
+  // This short repetition makes zlib's output exactly one full PSARC block.
+  std::copy_n(original.begin() + 49152, 68, original.end() - 68);
+  std::vector<byte> encoded(compressBound(blockSize));
+  uLongf encodedSize = encoded.size();
+  ASSERT_EQ(compress(encoded.data(), &encodedSize, original.data(), original.size()), Z_OK);
+  ASSERT_EQ(encodedSize, blockSize);
+
+  std::vector<byte> output;
+  std::vector<size_t> sizes;
+  ZLIBCompress(output, original, sizes, blockSize, blockSize);
+  ASSERT_EQ(sizes.size(), 1u);
+  // A zero table entry tells Fios to copy raw bytes, without zlib decoding.
+  EXPECT_EQ(sizes[0], 0u);
+  EXPECT_EQ(output, original);
+}
+
+TEST(ZlibCompression, ExpandedPartialBlockIsStoredRaw) {
+  std::vector<byte> original = {0x48, 0x78};
+  std::vector<byte> output;
+  std::vector<size_t> sizes;
+  ZLIBCompress(output, original, sizes, 65536, 65536);
+  ASSERT_EQ(sizes.size(), 1u);
+  EXPECT_EQ(sizes[0], original.size());
+  EXPECT_EQ(output, original);
+}
+
+TEST(ZlibCompression, EqualSizeCompressedPartialBlockIsStoredRaw) {
+  auto original = MakeIncompressibleBuffer(61438);
+  std::copy_n(original.begin() + 49152, 67, original.end() - 67);
+  std::vector<byte> encoded(compressBound(original.size()));
+  uLongf encodedSize = encoded.size();
+  ASSERT_EQ(compress(encoded.data(), &encodedSize, original.data(), original.size()), Z_OK);
+  ASSERT_EQ(encodedSize, original.size());
+
+  std::vector<byte> output;
+  std::vector<size_t> sizes;
+  ZLIBCompress(output, original, sizes, 65536, 65536);
+  ASSERT_EQ(sizes.size(), 1u);
+  EXPECT_EQ(sizes[0], original.size());
+  EXPECT_EQ(output, original);
 }
 
 TEST(ZlibCompression, MultiBlockRoundTrip) {

@@ -200,12 +200,14 @@ void PSArc::ZLIBCompress(
     int status =
       compress((Bytef*) (dst.data() + totalCompressedSize), &compressedBlockSize, (Bytef*) (src.data() + totalProcessedSize), processSize);
 
-    if (status == Z_OK) {
+    if (status == Z_OK && compressedBlockSize < processSize) {
       // All good; compressedBlockSize was updated by compress() to actual compressed size.
       actualBlockSize = compressedBlockSize;
     }
-    else if (status == Z_BUF_ERROR) {
-      // Compression did not reduce file size, hence we store this block uncompressed.
+    else if (status == Z_BUF_ERROR || status == Z_OK) {
+      // Equal-size compressed output is indistinguishable from raw data in the
+      // PSARC block table. Fios copies such blocks without decoding, so store
+      // the original bytes whenever compression does not reduce their size.
       std::memcpy(dst.data() + totalCompressedSize, src.data() + totalProcessedSize, processSize);
       // A full block stored uncompressed is signalled by a block table entry of 0.
       // Partial (last) blocks keep their real size so the reader knows how many bytes to consume.
